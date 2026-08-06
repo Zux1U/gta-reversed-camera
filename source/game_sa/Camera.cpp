@@ -1880,6 +1880,7 @@ CVector* CCamera::ProcessShake(float shakeIntensity) {
     const CVector result = CrossProduct_0x59C730(r, cam.m_vecFront);
     cam.m_vecUp = result;
 
+#pragma warning(suppress : 4172) // returning address of local: mirrors binary EAX = &cross-temp (dead by caller)
     return const_cast<CVector*>(&result); // EAX = &cross-temp == pointer to a dead stack local in the binary
 }
 
