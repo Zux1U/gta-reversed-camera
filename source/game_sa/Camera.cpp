@@ -533,30 +533,30 @@ void CCamera::CopyCameraMatrixToRWCam(bool bUpdateMatrix) {
 
     if (!bUpdateMatrix) {
         // 0x59AD20: helper on m_mCameraMatrixOld + frame matrix (identity unconfirmed).
-        plugin::CallMethod<void, 0x59AD20, RwMatrix*>(&m_mCameraMatrixOld, matrix);
+        plugin::CallMethod<0x59AD20>(&m_mCameraMatrixOld, matrix);
     }
 
-    *reinterpret_cast<CVector*>(&matrix->right) = m_mCameraMatrix.m_right;
-    *reinterpret_cast<CVector*>(&matrix->up)    = m_mCameraMatrix.m_up;
-    *reinterpret_cast<CVector*>(&matrix->at)    = m_mCameraMatrix.m_forward;
-    *reinterpret_cast<CVector*>(&matrix->pos)   = m_mCameraMatrix.m_pos;
+    *reinterpret_cast<CVector*>(&matrix->right) = m_mCameraMatrix.GetRight();
+    *reinterpret_cast<CVector*>(&matrix->up)    = m_mCameraMatrix.GetUp();
+    *reinterpret_cast<CVector*>(&matrix->at)    = m_mCameraMatrix.GetForward();
+    *reinterpret_cast<CVector*>(&matrix->pos)   = m_mCameraMatrix.GetPosition();
 
     // Cache seeding: on first ever use each row shadow is poisoned with -99999.0f.
     if ((gCamMatrixCacheFlags & 1) == 0) {
         gCamMatrixCacheFlags |= 1;
-        gCamMatrixCachePos = { -99999.0f, -99999.0f, -99999.0f };
+        gCamMatrixCachePos = CVector{ -99999.0f, -99999.0f, -99999.0f };
     }
     if ((gCamMatrixCacheFlags & 2) == 0) {
         gCamMatrixCacheFlags |= 2;
-        gCamMatrixCacheUp = { -99999.0f, -99999.0f, -99999.0f };
+        gCamMatrixCacheUp = CVector{ -99999.0f, -99999.0f, -99999.0f };
     }
     if ((gCamMatrixCacheFlags & 4) == 0) {
         gCamMatrixCacheFlags |= 4;
-        gCamMatrixCacheAt = { -99999.0f, -99999.0f, -99999.0f };
+        gCamMatrixCacheAt = CVector{ -99999.0f, -99999.0f, -99999.0f };
     }
     if ((gCamMatrixCacheFlags & 8) == 0) {
         gCamMatrixCacheFlags |= 8;
-        gCamMatrixCacheRight = { -99999.0f, -99999.0f, -99999.0f };
+        gCamMatrixCacheRight = CVector{ -99999.0f, -99999.0f, -99999.0f };
     }
 
     // Degenerate-direction guard: if a fresh row equals its cache entry the
@@ -604,11 +604,11 @@ void CCamera::CopyCameraMatrixToRWCam(bool bUpdateMatrix) {
 
     // RwFrame/matrix fixups run on every call.
     RwMatrixUpdate(matrix); // 0x7F18A0
-    plugin::Call<RwFrame*>(0x7F0910, frame); // identity unconfirmed
-    plugin::Call<RwFrame*>(0x7F1170, frame); // identity unconfirmed
+    plugin::Call<0x7F0910>(frame); // identity unconfirmed
+    plugin::Call<0x7F1170>(frame); // identity unconfirmed
 
     if (m_bResetOldMatrix && !bUpdateMatrix) {
-        plugin::CallMethod<void, 0x59AD20, RwMatrix*>(&m_mCameraMatrixOld, matrix);
+        plugin::CallMethod<0x59AD20>(&m_mCameraMatrixOld, matrix);
         m_bResetOldMatrix = false;
     }
 }
@@ -1244,13 +1244,13 @@ bool IsFirstPersonMode(eCamMode mode) {
 // 0x515BD0
 void CCamera::UpdateSoundDistances() {
     const auto& cam  = m_aCams[m_nActiveCam];
-    const auto& fwd  = m_mCameraMatrix.m_forward; // rows: right@+0, forward@+0x10, up@+0x20, pos@+0x30
+    const auto& fwd  = m_mCameraMatrix.GetForward(); // rows: right@+0, forward@+0x10, up@+0x20, pos@+0x30
 
     CVector dir;
     if (IsFirstPersonMode(cam.m_nMode) && m_pTargetEntity && m_pTargetEntity->GetType() == ENTITY_TYPE_PED) {
-        dir = { fwd.x * 0.5f, fwd.y * 0.5f, fwd.z * 0.5f }; // FLD/FMUL 0.5f (0x858B8C)
+        dir = CVector{ fwd.x * 0.5f, fwd.y * 0.5f, fwd.z * 0.5f }; // FLD/FMUL 0.5f (0x858B8C)
     } else {
-        dir = { fwd.x * 5.0f, fwd.y * 5.0f, fwd.z * 5.0f }; // FLD/FMUL 5.0f (0x858C80)
+        dir = CVector{ fwd.x * 5.0f, fwd.y * 5.0f, fwd.z * 5.0f }; // FLD/FMUL 5.0f (0x858C80)
     }
 
     // Base position: m_matrix+0x30 if matrix present, else m_placement.m_vPosn.
@@ -1806,41 +1806,41 @@ CVector* CCamera::ProcessShake(float shakeIntensity) {
         // (decoded with the PE byte order): 0x3CA3D70A=0.02f, 0x3C23D70A=0.01f,
         // 0x3951B717=0.0002f, 0x38D1B717=0.0001f, 0x3FA66666=1.3f,
         // 0x3FB33333=1.4f, 0x3D23D70A=0.04f, 0x3E99999A=0.3f, 0x3F800000=1.0f.
-        gHandShaker[1].m_lim              = {0.02f, 0.02f, 0.01f};
-        gHandShaker[1].m_motion           = {0.0002f, 0.0002f, 0.0001f};
-        gHandShaker[1].m_slow             = {1.3f, 1.3f, 1.4f};
+        gHandShaker[1].m_lim              = CVector{0.02f, 0.02f, 0.01f};
+        gHandShaker[1].m_motion           = CVector{0.0002f, 0.0002f, 0.0001f};
+        gHandShaker[1].m_slow             = CVector{1.3f, 1.3f, 1.4f};
         gHandShaker[1].m_scaleReactionMin = 0.3f;
         gHandShaker[1].m_scaleReactionMax = 1.0f;
         gHandShaker[1].m_twitchFreq       = 15;
         gHandShaker[1].m_twitchVel        = 0.001f; // 0x3A83126F
 
-        gHandShaker[2].m_lim              = {0.02f, 0.02f, 0.04f};
-        gHandShaker[2].m_motion           = {0.0002f, 0.0002f, 0.0001f};
-        gHandShaker[2].m_slow             = {1.3f, 1.3f, 1.4f};
+        gHandShaker[2].m_lim              = CVector{0.02f, 0.02f, 0.04f};
+        gHandShaker[2].m_motion           = CVector{0.0002f, 0.0002f, 0.0001f};
+        gHandShaker[2].m_slow             = CVector{1.3f, 1.3f, 1.4f};
         gHandShaker[2].m_scaleReactionMin = 0.3f;
         gHandShaker[2].m_scaleReactionMax = 1.0f;
         gHandShaker[2].m_twitchFreq       = 20;
         gHandShaker[2].m_twitchVel        = 0.001f;
 
-        gHandShaker[3].m_lim              = {0.02f, 0.02f, 0.01f};
-        gHandShaker[3].m_motion           = {0.0002f, 0.0002f, 0.0001f};
-        gHandShaker[3].m_slow             = {1.3f, 1.3f, 1.4f};
+        gHandShaker[3].m_lim              = CVector{0.02f, 0.02f, 0.01f};
+        gHandShaker[3].m_motion           = CVector{0.0002f, 0.0002f, 0.0001f};
+        gHandShaker[3].m_slow             = CVector{1.3f, 1.3f, 1.4f};
         gHandShaker[3].m_scaleReactionMin = 0.3f;
         gHandShaker[3].m_scaleReactionMax = 1.0f;
         gHandShaker[3].m_twitchFreq       = 10;
         gHandShaker[3].m_twitchVel        = 0.0005f; // 0x3A03126F
 
-        gHandShaker[4].m_lim              = {0.02f, 0.02f, 0.01f};
-        gHandShaker[4].m_motion           = {0.0002f, 0.0002f, 0.0001f};
-        gHandShaker[4].m_slow             = {1.3f, 1.3f, 1.4f};
+        gHandShaker[4].m_lim              = CVector{0.02f, 0.02f, 0.01f};
+        gHandShaker[4].m_motion           = CVector{0.0002f, 0.0002f, 0.0001f};
+        gHandShaker[4].m_slow             = CVector{1.3f, 1.3f, 1.4f};
         gHandShaker[4].m_scaleReactionMin = 0.3f;
         gHandShaker[4].m_scaleReactionMax = 1.0f;
         gHandShaker[4].m_twitchFreq       = 20;
         gHandShaker[4].m_twitchVel        = 0.002f; // 0x3B03126F
 
-        gHandShaker[5].m_lim              = {0.02f, 0.02f, 0.01f};
-        gHandShaker[5].m_motion           = {0.0002f, 0.0002f, 0.0001f};
-        gHandShaker[5].m_slow             = {1.3f, 1.3f, 1.4f};
+        gHandShaker[5].m_lim              = CVector{0.02f, 0.02f, 0.01f};
+        gHandShaker[5].m_motion           = CVector{0.0002f, 0.0002f, 0.0001f};
+        gHandShaker[5].m_slow             = CVector{1.3f, 1.3f, 1.4f};
         gHandShaker[5].m_scaleReactionMin = 0.3f;
         gHandShaker[5].m_scaleReactionMax = 1.0f;
         gHandShaker[5].m_twitchFreq       = 2;
@@ -1856,10 +1856,10 @@ CVector* CCamera::ProcessShake(float shakeIntensity) {
 
     // 0x59C810 semantics: rotate-only row transform, exact (top-four) FP pairing.
     // Rows are right@+0, forward@+0x10, up@+0x20 of the CMatrix.
-    cam.m_vecFront = {
-        (shaker.m_resultMat.m_right.y * cam.m_vecFront.y + shaker.m_resultMat.m_right.z * cam.m_vecFront.z) + shaker.m_resultMat.m_right.x * cam.m_vecFront.x,
-        (shaker.m_resultMat.m_forward.y * cam.m_vecFront.y + shaker.m_resultMat.m_forward.x * cam.m_vecFront.x) + shaker.m_resultMat.m_forward.z * cam.m_vecFront.z,
-        (shaker.m_resultMat.m_up.y * cam.m_vecFront.y + shaker.m_resultMat.m_up.x * cam.m_vecFront.x) + shaker.m_resultMat.m_up.z * cam.m_vecFront.z,
+    cam.m_vecFront = CVector{
+        (shaker.m_resultMat.GetRight().y * cam.m_vecFront.y + shaker.m_resultMat.GetRight().z * cam.m_vecFront.z) + shaker.m_resultMat.GetRight().x * cam.m_vecFront.x,
+        (shaker.m_resultMat.GetForward().y * cam.m_vecFront.y + shaker.m_resultMat.GetForward().x * cam.m_vecFront.x) + shaker.m_resultMat.GetForward().z * cam.m_vecFront.z,
+        (shaker.m_resultMat.GetUp().y * cam.m_vecFront.y + shaker.m_resultMat.GetUp().x * cam.m_vecFront.x) + shaker.m_resultMat.GetUp().z * cam.m_vecFront.z,
     };
     NormaliseVector(cam.m_vecFront); // 0x59C910
 
@@ -2004,9 +2004,9 @@ float CCamera::CalculateGroundHeight(eGroundHeightType type) {
 }
 
 static void TransformVectorsToWorld(RwV3d* out, const RwV3d* in, CMatrix& matrix) {
-    matrix.CopyToRwMatrix(Game::m_pWorkingMatrix1); // 0x59B8B0
-    RwMatrixUpdate(Game::m_pWorkingMatrix1);        // 0x7F18A0
-    RwV3dTransformVectors(out, const_cast<RwV3d*>(in), 4, Game::m_pWorkingMatrix1); // 0x7EDDC0
+    matrix.CopyToRwMatrix(CGame::m_pWorkingMatrix1); // 0x59B8B0
+    RwMatrixUpdate(CGame::m_pWorkingMatrix1);        // 0x7F18A0
+    RwV3dTransformVectors(out, const_cast<RwV3d*>(in), 4, CGame::m_pWorkingMatrix1); // 0x7EDDC0
 }
 // 0x514D60
 void CCamera::CalculateFrustumPlanes(bool bForMirror) {

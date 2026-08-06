@@ -2,6 +2,7 @@
 
 #include "Camera.h"
 #include "General.h"
+#include "PedPlacement.h"
 #include "Models/ModelInfo.h"
 #include "Tasks/Allocators/PedGroup/PedGroupDefaultTaskAllocators.h"
 #include "Tasks/TaskTypes/TaskComplexBeInGroup.h"
@@ -46,7 +47,7 @@ bool CPedGroupPlacer::PlaceFormationGroup(ePedType type, uint32 numOfPeds, const
     // 0x420D40 - CCamera::IsSphereVisible. Reversed; gate must trigger on the
     // camera quads in the same frame as the original call does.
     if (TheCamera.IsSphereVisible(origin, 3.0f)) {
-        const CVector playerPos = CWorld::FindPlayerPed(-1)->GetPosition(); // 0x56E210
+        const CVector playerPos = FindPlayerPed(-1)->GetPosition(); // 0x56E210
         const float   dx = origin.x - playerPos.x;
         const float   dy = origin.y - playerPos.y;
         const float   dist = std::sqrt(dy * dy + dx * dx);
@@ -159,7 +160,7 @@ bool CPedGroupPlacer::PlaceChatGroup(ePedType type, uint32 numOfPeds, const CVec
 
     // 0x420D40 - CCamera::IsSphereVisible, radius = circle radius.
     if (TheCamera.IsSphereVisible(origin, radius)) {
-        const CVector playerPos = CWorld::FindPlayerPed(-1)->GetPosition(); // 0x56E210
+        const CVector playerPos = FindPlayerPed(-1)->GetPosition(); // 0x56E210
         const float   dx = origin.x - playerPos.x;
         const float   dy = origin.y - playerPos.y;
         const float   dist = std::sqrt(dy * dy + dx * dx);
@@ -295,7 +296,7 @@ bool CPedGroupPlacer::PlaceRandomGroup(ePedType type, uint32 numOfPeds, const CV
 
     // 0x420D40 - CCamera::IsSphereVisible, radius = circle radius.
     if (TheCamera.IsSphereVisible(origin, radius)) {
-        const CVector playerPos = CWorld::FindPlayerPed(-1)->GetPosition(); // 0x56E210
+        const CVector playerPos = FindPlayerPed(-1)->GetPosition(); // 0x56E210
         const float   dx = origin.x - playerPos.x;
         const float   dy = origin.y - playerPos.y;
         const float   dist = std::sqrt(dy * dy + dx * dx);
