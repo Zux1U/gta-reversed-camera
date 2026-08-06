@@ -1882,7 +1882,7 @@ CVector* CCamera::ProcessShake(float shakeIntensity) {
     const CVector result = CrossProduct_0x59C730(r, cam.m_vecFront);
     cam.m_vecUp = result;
 
-    CVector* alive = &result; // see note on return below
+    CVector* alive = const_cast<CVector*>(&result); // see note on return below
     return alive; // EAX = &cross-temp == pointer to a dead stack local in the binary
 }
 #pragma warning(pop)
