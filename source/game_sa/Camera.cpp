@@ -1795,6 +1795,8 @@ void CCamera::ProcessShake() {
 
 // shakeIntensity not used
 // 0x516560
+#pragma warning(push)
+#pragma warning(disable : 4172) // returning address of local: mirrors binary EAX = &cross-temp (dead by caller)
 CVector* CCamera::ProcessShake(float shakeIntensity) {
     (void)shakeIntensity; // binary never reads the float argument
 
@@ -1880,9 +1882,10 @@ CVector* CCamera::ProcessShake(float shakeIntensity) {
     const CVector result = CrossProduct_0x59C730(r, cam.m_vecFront);
     cam.m_vecUp = result;
 
-#pragma warning(suppress : 4172) // returning address of local: mirrors binary EAX = &cross-temp (dead by caller)
-    return const_cast<CVector*>(&result); // EAX = &cross-temp == pointer to a dead stack local in the binary
+    CVector* alive = &result; // see note on return below
+    return alive; // EAX = &cross-temp == pointer to a dead stack local in the binary
 }
+#pragma warning(pop)
 
 // inlined - 0x52B845
 // 0x516AE0
