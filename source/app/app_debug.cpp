@@ -75,6 +75,7 @@ LONG WINAPI WindowsExceptionHandler(PEXCEPTION_POINTERS pExceptionInfo) {
     
     const auto Section = [](const char* name) {
         SPDLOG_INFO("*********{}**********", name);
+        printf("*********%s**********\n", name);
     };
 
     Section("UNHANDLED EXCEPTION");
@@ -82,6 +83,9 @@ LONG WINAPI WindowsExceptionHandler(PEXCEPTION_POINTERS pExceptionInfo) {
     SPDLOG_INFO("Exception Code: {:#010x}", pExceptionInfo->ExceptionRecord->ExceptionCode);
     SPDLOG_INFO("Exception Flags: {:#010x}", pExceptionInfo->ExceptionRecord->ExceptionFlags);
     SPDLOG_INFO("Exception Address: {:#010x}", (uintptr_t)pExceptionInfo->ExceptionRecord->ExceptionAddress);
+    printf("Exception Code: 0x%08x\n", (uint32_t)pExceptionInfo->ExceptionRecord->ExceptionCode);
+    printf("Exception Flags: 0x%08x\n", (uint32_t)pExceptionInfo->ExceptionRecord->ExceptionFlags);
+    printf("Exception Address: 0x%08x\n", (uint32_t)(uintptr_t)pExceptionInfo->ExceptionRecord->ExceptionAddress);
 
     // Dump exception parameters
     Section("PARAMETERS");
@@ -98,6 +102,7 @@ LONG WINAPI WindowsExceptionHandler(PEXCEPTION_POINTERS pExceptionInfo) {
     {
         const auto DumpRegister = [](auto name, auto value) {
             SPDLOG_INFO("\t{}: {:#010x}", name, value);
+            printf("\t%s: 0x%08x\n", name, (uint32_t)(uintptr_t)value);
         };
         DumpRegister("EAX", context.Eax);
         DumpRegister("EBX", context.Ebx);
@@ -181,6 +186,11 @@ LONG WINAPI WindowsExceptionHandler(PEXCEPTION_POINTERS pExceptionInfo) {
                 hasSym ? sym->Name : "<unknown>",
                 hasLineInfo ? lineInfo.LineNumber : 0
             );
+            printf("\t0x%08x: %s!%s:%lu\n",
+                (uint32_t)pcOffset,
+                hasModuleInfo ? moduleInfo.ModuleName : "<unknown>",
+                hasSym ? sym->Name : "<unknown>",
+                hasLineInfo ? (unsigned long)lineInfo.LineNumber : 0ul);
         }
 
         // Cleanup symbol handler
@@ -210,7 +220,7 @@ notsa::Logging::Logging() {
     spdlog::enable_backtrace(128);
     spdlog::set_level(spdlog::level::debug);
 
-    m_sinks.emplace_back(std::make_shared<spdlog::sinks::basic_file_sink_mt>("logs/log.log"));
+    m_sinks.emplace_back(std::make_shared<spdlog::sinks::basic_file_sink_mt>("C:/Users/ilyan/GTA San Andreas/logs/log.log"));
     m_sinks.emplace_back(std::make_shared<spdlog::sinks::stdout_color_sink_mt>());
 
     spdlog::set_default_logger(Create("default"));
