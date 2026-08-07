@@ -11,6 +11,8 @@
 
 #define FINAL 0
 
+static FILE* g_crashFile = nullptr;
+
 #ifndef FINAL
 RtCharset* debugCharset;
 bool g_bDebugRenderGroups;
@@ -71,8 +73,8 @@ LONG WINAPI WindowsExceptionHandler(PEXCEPTION_POINTERS pExceptionInfo) {
 
     // TEMP: raw-file mirror of the crash dump (console+spdlog may be lost on exit)
     CreateDirectoryA("C:\\Users\\ilyan\\GTA San Andreas\\logs", nullptr);
-    FILE* s_crashFile = fopen("C:\\Users\\ilyan\\GTA San Andreas\\logs\\log.log", "a");
-    #define CRASHLOG(...) do { printf(__VA_ARGS__); printf("\n"); if (s_crashFile) fprintf(s_crashFile, __VA_ARGS__); if (s_crashFile) fputc('\n', s_crashFile); } while (0)
+    g_crashFile = fopen("C:\\Users\\ilyan\\GTA San Andreas\\logs\\log.log", "a");
+    #define CRASHLOG(...) do { printf(__VA_ARGS__); printf("\n"); if (g_crashFile) fprintf(g_crashFile, __VA_ARGS__); if (g_crashFile) fputc('\n', g_crashFile); } while (0)
 
     spdlog::apply_all([](auto&& logger) {
         logger->dump_backtrace();
@@ -208,9 +210,10 @@ LONG WINAPI WindowsExceptionHandler(PEXCEPTION_POINTERS pExceptionInfo) {
         logger->flush();
     });
 
-    if (s_crashFile) {
-        fflush(s_crashFile);
-        fclose(s_crashFile);
+    if (g_crashFile) {
+        fflush(g_crashFile);
+        fclose(g_crashFile);
+        g_crashFile = nullptr;
     }
     #undef CRASHLOG
 
