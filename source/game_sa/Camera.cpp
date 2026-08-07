@@ -24,6 +24,11 @@
 #include "Timer.h"
 #include "World.h"
 
+// --- TEMP: camera trace markers (remove after debugging) ---
+#define CAMTRACE_ONCE(...) CAMTRACE(__VA_ARGS__)
+#define CAMTRACE(...)      do { printf(__VA_ARGS__); printf("\n"); } while (0)
+// --- END TEMP ---
+
 auto& TheCamera = StaticRef<CCamera>(0xB6F028);
 auto& gbModelViewer = StaticRef<bool>(0xBA6728);
 auto& gbCineyCamMessageDisplayed = StaticRef<int8>(0x8CC381); // 2
@@ -1152,6 +1157,7 @@ void CCamera::UpdateTargetEntity() {
 
 // 0x50C7C0
 void CCamera::TakeControl(CEntity* target, eCamMode modeToGoTo, eSwitchType switchType, int32 whoIsInControlOfTheCamera) {
+    CAMTRACE("[CAM] TakeControl mode=%d who=%d", (int32)modeToGoTo, whoIsInControlOfTheCamera);
     if (!m_bCinemaCamera) {
         if (whoIsInControlOfTheCamera == 2 && m_nWhoIsInControlOfTheCamera == 1) {
             return;
@@ -1895,6 +1901,7 @@ CVector* CCamera::ProcessShake(float shakeIntensity) {
 // inlined - 0x52B845
 // 0x516AE0
 void CCamera::ProcessScriptedCommands() {
+    CAMTRACE_ONCE("[CAM] ProcessScriptedCommands");
     ProcessVectorMoveLinear();
     ProcessVectorTrackLinear();
     ProcessFOVLerp();
@@ -1903,6 +1910,7 @@ void CCamera::ProcessScriptedCommands() {
 // 0x52B730
 void CCamera::Process() {
     ZoneScoped;
+    CAMTRACE_ONCE("[CAM] Process");
 
     plugin::CallMethod<0x52B730, CCamera*>(this);
 }
@@ -1938,6 +1946,7 @@ void CCamera::FinishCutscene() {
 
 // 0x514970
 void CCamera::Find3rdPersonCamTargetVector(float range, CVector gunMuzzle, CVector& outSource, CVector& outTarget) {
+    CAMTRACE_ONCE("[CAM] Find3rdPersonCamTargetVector");
     const auto pActiveCam = &m_aCams[m_nActiveCam];
     const float tanHalfFOV = std::tan(DegreesToRadians(pActiveCam->m_fFOV * 0.5f));
     const float aspectRatio = CDraw::ms_fAspectRatio;
@@ -1973,6 +1982,7 @@ void CCamera::Find3rdPersonCamTargetVector(float range, CVector gunMuzzle, CVect
 
 // 0x514B80
 float CCamera::CalculateGroundHeight(eGroundHeightType type) {
+    CAMTRACE_ONCE("[CAM] CalculateGroundHeight type=%d", (int32)type);
     static auto& lastCalcCamPos    = StaticRef<CVector>(0xB70034);
     static auto& exactGroundHeight = StaticRef<float>(0xB70030);
     static auto& bbTopZ            = StaticRef<float>(0xB7002C);
@@ -2062,6 +2072,7 @@ void CCamera::CalculateFrustumPlanes(bool bForMirror) {
 
 // 0x5150E0
 void CCamera::CalculateDerivedValues(bool bForMirror, bool bOriented) {
+    CAMTRACE_ONCE("[CAM] CalculateDerivedValues");
     // 0x59BDD0 (+0x59B920): RwMatrix-level inverse of m_mCameraMatrix into a detached
     // CMatrix (transpose rotation + negate position); 0x59BBC0 = CMatrix::operator=
     // copies it into +0xA4C. The 0x59ACD0 dtor of the temporary is a no-op.
@@ -2097,6 +2108,7 @@ void CCamera::CalculateDerivedValues(bool bForMirror, bool bOriented) {
 
 // 0x516B20
 void CCamera::ImproveNearClip(CVehicle* vehicle, CPed* ped, CVector* source, CVector* targPosn) {
+    CAMTRACE_ONCE("[CAM] ImproveNearClip");
     const float dist = (*source - *targPosn).Magnitude(); // ((dx^2+dy^2)+dz^2) sqrt, same order as 0x516B45..0x516B59
 
     if (dist > 10.0f /* 0x8CCD08 */) { // FCOMP [0x8CCD08]; TEST AH,0x41; JNZ -> skip
@@ -2239,6 +2251,7 @@ void CCamera::RestoreCameraAfterMirror() {
 
 // 0x51A5D0
 bool CCamera::ConeCastCollisionResolve(const CVector& pos, const CVector& lookAt, CVector& outDest, float radius, float minDist, float& outDist) {
+    CAMTRACE_ONCE("[CAM] ConeCastCollisionResolve");
     if (pos == lookAt) {
         return false;
     }
@@ -2256,6 +2269,7 @@ bool CCamera::ConeCastCollisionResolve(const CVector& pos, const CVector& lookAt
 // 0x51E560
 // Dispatch matches the jump table 0x520110 (case -> handler offsets read off the original binary).
 bool CCamera::TryToStartNewCamMode(int32 camSequence) {
+    CAMTRACE("[CAM] TryToStartNewCamMode seq=%d", camSequence);
     // Shared epilogue LAB_0051ffad: TakeControl(FindPlayerEntity(-1), mode, JUMPCUT, 2)
     // followed by the 0x50B830 helper; the tail returns !result (NEG AL / SBB AL,AL / INC AL).
     const auto T0Tail = [this](eCamMode mode) {
@@ -2768,6 +2782,7 @@ static auto& s_fLastRadiusUsedInCollisionPreventionOfCamera = StaticRef<float>(0
 
 // 0x520190
 void CCamera::CameraColDetAndReact(CVector* source, CVector* target) {
+    CAMTRACE_ONCE("[CAM] CameraColDetAndReact");
     const float deltaX = source->x - target->x; // [ESP+0x18]
     const float deltaY = source->y - target->y; // [ESP+0x1C]
     const float deltaZ = source->z - target->z; // [ESP+0x20]
@@ -2908,6 +2923,7 @@ void CCamera::CameraColDetAndReact(CVector* source, CVector* target) {
 
 // 0x527FA0
 void CCamera::CamControl() {
+    CAMTRACE_ONCE("[CAM] CamControl");
     plugin::CallMethod<0x527FA0, CCamera*>(this); // good luck warrior!
 }
 
@@ -3034,6 +3050,7 @@ void CCamera::SetColVarsVehicle(eVehicleType vehicleType, int32 camVehicleZoom) 
 
 // 0x515BC0
 void CCamera::StartTransitionWhenNotFinishedInter(eCamMode newCamMode) {
+    CAMTRACE("[CAM] StartTransitionWhenNotFinishedInter mode=%d", (int32)newCamMode);
     m_bDoingSpecialInterp = true;
     StartTransition(newCamMode);
 }
@@ -3066,6 +3083,7 @@ void CCamera::StartTransitionWhenNotFinishedInter(eCamMode newCamMode) {
  * @see CCam
  */
 void CCamera::StartTransition(eCamMode newCamMode) {
+    CAMTRACE("[CAM] StartTransition mode=%d", (int32)newCamMode);
     CCam& activeCam             = m_aCams[m_nActiveCam];
     const auto activeCamMode    = activeCam.m_nMode;
 
