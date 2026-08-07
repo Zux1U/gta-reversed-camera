@@ -2264,7 +2264,7 @@ bool CCamera::TryToStartNewCamMode(int32 camSequence) {
     };
     // LAB_0051e8d6: SetCamPositionForFixedMode(camPos, camPos) + T0(MODE_FIXED). The binary
     // passes the two arguments from the camPos-derived slots on the stack (0x51E8DF/0x51E8DA).
-    const auto FixedTail = [this](const CVector& camPos) {
+    const auto FixedTail = [this, &T0Tail](const CVector& camPos) {
         this->SetCamPositionForFixedMode(camPos, camPos);
         return T0Tail(MODE_FIXED);
     };
@@ -2442,14 +2442,14 @@ bool CCamera::TryToStartNewCamMode(int32 camSequence) {
     case 7:
     {
         // 0x51EEDE: CAM_ON_A_STRING is started on a nearby "ignored" parked car (vehicle pool 0xB74494).
-        if (FindPlayerPed(-1)->GetWantedLevel() < 1) // 0x41BE60
+        if (static_cast<int32>(FindPlayerPed(-1)->GetWantedLevel()) < 1) // 0x41BE60
             return false;
         if (!FindPlayerVehicle(-1, false))
             return false;
         if (BoatTargetNotRHINO(FindPlayerVehicle(-1, false)))
             return false;
 
-        const auto& pool = *StaticRef<CVehiclePool*>(0xB74494); // ms_pVehiclePool
+        auto& pool = *StaticRef<CVehiclePool*>(0xB74494); // ms_pVehiclePool
         int32 idx = static_cast<int32>(pool.GetSize()) - 1;
         while (idx >= 0) {
             auto* const vehicle = pool.GetAt(idx--); // 0x41CC10
@@ -2457,24 +2457,24 @@ bool CCamera::TryToStartNewCamMode(int32 camSequence) {
                 continue;
             if (vehicle == FindPlayerVehicle(-1, false))
                 continue;
-            if (!(vehicle->GetFlags() & 1)) // bIsStaticWaitingForCollision
+            if (!(vehicle->m_nFlags & 1)) // 0x51F099: flags byte bit0 (m_bUsesCollision)
                 continue;
-            if ((vehicle->m_nStatus & 0xF8) != 0x18)
+            if ((static_cast<int32>(vehicle->GetStatus()) << 3) != 0x18) // 0x51F0A6: raw byte & 0xF8 == 0x18
                 continue;
 
             const CVector vehiclePos = vehicle->m_matrix ? vehicle->m_matrix->GetPosition() : vehicle->GetPosition();
             const CVector delta = vehiclePos - FindPlayerCoors(-1);
             if (delta.Magnitude() >= 30.0f) // 0x858CA4, proceed only when strictly below
                 continue;
-            // Player forward dot gates (0x51F04B..0x51F0B2): the "ignored" car faces the player
-            // and the player is not yet heading straight at it.
+            // Player-up dot gates (0x51F04B..0x51F0B2): the two cars' vertical axes; the deltas are
+            // taken against the player's own matrix without a null check in the binary.
             const auto* const playerVeh = FindPlayerVehicle(-1, false);
-            const CVector playerFwd = playerVeh && playerVeh->m_matrix ? playerVeh->m_matrix->GetForward() : CVector{};
-            if (delta.x * playerFwd.y + delta.y * playerFwd.z >= 0.0f) // 0x51F064..0x51F076, FCOMP 0.0 (0x858B50)
+            const CVector playerUp = playerVeh->m_matrix->GetUp();
+            if (delta.x * playerUp.x + delta.y * playerUp.y >= 0.0f) // 0x51F064..0x51F076, FCOMP 0.0 (0x858B50)
                 continue;
             const auto* const vehMat = vehicle->m_matrix;
-            const CVector vehFwd = vehMat ? vehMat->GetForward() : CVector{};
-            if (vehFwd.y * playerFwd.y + vehFwd.z * playerFwd.z <= 0.8f) // 0x51F0A1..0x51F0B2, FCOMP 0.8 (0x858C98)
+            const CVector vehUp = vehMat->GetUp();
+            if (playerUp.y * vehUp.y + playerUp.x * vehUp.x <= 0.8f) // 0x51F0A1..0x51F0B2, FCOMP 0.8 (0x858C98)
                 continue;
 
             TakeControl(vehicle, MODE_CAM_ON_A_STRING, eSwitchType::JUMPCUT, 2); // 0x51F0C9 pushes 0x12
@@ -2486,14 +2486,14 @@ bool CCamera::TryToStartNewCamMode(int32 camSequence) {
     case 8:
     {
         // 0x51F0FB: same "ignored parked car" search, but WHEELCAM with the per-car -1.4/-2.3/0.3 offset.
-        if (FindPlayerPed(-1)->GetWantedLevel() < 1)
+        if (static_cast<int32>(FindPlayerPed(-1)->GetWantedLevel()) < 1)
             return false;
         if (!FindPlayerVehicle(-1, false))
             return false;
         if (BoatTargetNotRHINO(FindPlayerVehicle(-1, false)))
             return false; // 0x51F13E..0x51F161
 
-        const auto& pool = *StaticRef<CVehiclePool*>(0xB74494);
+        auto& pool = *StaticRef<CVehiclePool*>(0xB74494);
         int32 idx = static_cast<int32>(pool.GetSize()) - 1;
         while (idx >= 0) {
             auto* const vehicle = pool.GetAt(idx--);
@@ -2501,7 +2501,7 @@ bool CCamera::TryToStartNewCamMode(int32 camSequence) {
                 continue;
             if (vehicle == FindPlayerVehicle(-1, false))
                 continue;
-            if (!(vehicle->GetFlags() & 1))
+            if (!(vehicle->m_nFlags & 1)) // 0x51F1A0: flags byte bit0 (m_bUsesCollision)
                 continue;
 
             const CVector vehiclePos = vehicle->m_matrix ? vehicle->m_matrix->GetPosition() : vehicle->GetPosition();
@@ -2509,12 +2509,12 @@ bool CCamera::TryToStartNewCamMode(int32 camSequence) {
             if (delta.Magnitude() >= 30.0f)
                 continue;
             const auto* const playerVeh = FindPlayerVehicle(-1, false);
-            const CVector playerFwd = playerVeh && playerVeh->m_matrix ? playerVeh->m_matrix->GetForward() : CVector{};
-            if (delta.x * playerFwd.y + delta.y * playerFwd.z >= 0.0f)
+            const CVector playerUp = playerVeh->m_matrix->GetUp();
+            if (delta.x * playerUp.x + delta.y * playerUp.y >= 0.0f)
                 continue;
             const auto* const vehMat = vehicle->m_matrix;
-            const CVector vehFwd = vehMat ? vehMat->GetForward() : CVector{};
-            if (vehFwd.y * playerFwd.y + vehFwd.z * playerFwd.z <= 0.8f)
+            const CVector vehUp = vehMat->GetUp();
+            if (playerUp.y * vehUp.y + playerUp.x * vehUp.x <= 0.8f)
                 continue;
 
             const CVector offset{-1.4f, -2.3f, 0.3f};
@@ -2719,35 +2719,35 @@ bool CCamera::TryToStartNewCamMode(int32 camSequence) {
         return FixedTail(camPos);
     }
     case 0x13:
-        if (!GetActiveCam().Process_DW_HeliChaseCam(true)) // mode 0x38
+        if (!plugin::CallMethodAndReturn<bool, 0x51A740, CCam*, bool>(&GetActiveCam(), true)) // CCam::Process_DW_HeliChaseCam, mode 0x38
             return false;
         return T0Tail(MODE_DW_HELI_CHASE);
     case 0x14:
-        if (!GetActiveCam().Process_DW_CamManCam(true)) // mode 0x39
+        if (!plugin::CallMethodAndReturn<bool, 0x51B120, CCam*, bool>(&GetActiveCam(), true)) // CCam::Process_DW_CamManCam, mode 0x39
             return false;
         return T0Tail(MODE_DW_CAM_MAN);
     case 0x15:
-        if (!GetActiveCam().Process_DW_BirdyCam(true)) // mode 0x3A
+        if (!plugin::CallMethodAndReturn<bool, 0x51B850, CCam*, bool>(&GetActiveCam(), true)) // CCam::Process_DW_BirdyCam, mode 0x3A
             return false;
         return T0Tail(MODE_DW_BIRDY);
     case 0x16:
-        if (!GetActiveCam().Process_DW_PlaneSpotterCam(true)) // mode 0x3B
+        if (!plugin::CallMethodAndReturn<bool, 0x51C250, CCam*, bool>(&GetActiveCam(), true)) // CCam::Process_DW_PlaneSpotterCam, mode 0x3B
             return false;
         return T0Tail(MODE_DW_PLANE_SPOTTER);
     case 0x17:
     case 0x18:
-        StaticRef<uint8>(0xB6F059).get() = 0;
+        StaticRef<uint8>(0xB6F059) = 0;
         return false;
     case 0x19:
-        if (!GetActiveCam().Process_DW_PlaneCam1(true)) // mode 0x3E
+        if (!plugin::CallMethodAndReturn<bool, 0x51C760, CCam*, bool>(&GetActiveCam(), true)) // CCam::Process_DW_PlaneCam1, mode 0x3E
             return false;
         return T0Tail(MODE_DW_PLANECAM1);
     case 0x1A:
-        if (!GetActiveCam().Process_DW_PlaneCam2(true)) // mode 0x3F
+        if (!plugin::CallMethodAndReturn<bool, 0x51CC30, CCam*, bool>(&GetActiveCam(), true)) // CCam::Process_DW_PlaneCam2, mode 0x3F
             return false;
         return T0Tail(MODE_DW_PLANECAM2);
     case 0x1B:
-        if (!GetActiveCam().Process_DW_PlaneCam3(true)) // mode 0x40
+        if (!plugin::CallMethodAndReturn<bool, 0x51D100, CCam*, bool>(&GetActiveCam(), true)) // CCam::Process_DW_PlaneCam3, mode 0x40
             return false;
         return T0Tail(MODE_DW_PLANECAM3);
     case 0x1C:
