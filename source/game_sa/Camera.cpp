@@ -2936,20 +2936,11 @@ void CCamera::DeleteCutSceneCamDataMemory() {
 }
 
 static char* LoadNextDataLine(FILE* file) {
-    static char buf[0x200]{}; // the binary uses the module global 0xB71848
-    if (!CFileMgr::ReadLine(file, buf, sizeof(buf))) {
-        return nullptr;
-    }
-    for (char* p = buf; *p != '\0'; ++p) {
-        if (*p < 0x20 || *p == ',') {
-            *p = ' ';
-        }
-    }
-    char* line = buf;
-    while (*line < 0x21 && *line != '\0') {
-        ++line;
-    }
-    return line;
+    // The original reads lines through 0x536F80 (game-CRT-backed reader over the shared
+    // buffer 0xB71848, normalising <0x20 / ',' to spaces). This MUST go through the game
+    // code: reimplementing it with the plugin's CRT fgets on a game-CRT-owned FILE* crashes
+    // (mixed CRT stdio - seen as an AV inside _lock_file / RtlEnterCriticalSection).
+    return plugin::CallAndReturn<char*, 0x536F80>(file);
 }
 // 0x5B24D0
 void CCamera::LoadPathSplines(FILE* file) {
