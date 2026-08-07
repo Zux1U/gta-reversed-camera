@@ -5,6 +5,11 @@
 #include "TaskSimpleGangDriveBy.h"
 #include "TaskSimpleHoldEntity.h"
 #include "TaskSimpleDuck.h"
+#include "Collision/Collision.h"
+#include "Models/ModelInfo.h"
+#include "PedIntelligence.h"
+#include "Tasks/TaskTypes/TaskSimpleSwim.h"
+#include "WaterLevel.h"
 #include "Hud.h"
 #include "Cam.h"
 #include "Draw.h"
@@ -136,12 +141,12 @@ void CCamera::InjectHooks() {
     RH_ScopedInstall(CalculateGroundHeight, 0x514B80);
     RH_ScopedInstall(CalculateFrustumPlanes, 0x514D60);
     RH_ScopedInstall(CalculateDerivedValues, 0x5150E0);
-    RH_ScopedInstall(ImproveNearClip, 0x516B20, { .reversed = false });
+    RH_ScopedInstall(ImproveNearClip, 0x516B20);
     RH_ScopedInstall(SetCameraUpForMirror, 0x51A560);
     RH_ScopedInstall(RestoreCameraAfterMirror, 0x51A5A0);
     RH_ScopedInstall(ConeCastCollisionResolve, 0x51A5D0);
-    RH_ScopedInstall(TryToStartNewCamMode, 0x51E560, { .reversed = false });
-    RH_ScopedInstall(CameraColDetAndReact, 0x520190, { .reversed = false });
+    RH_ScopedInstall(TryToStartNewCamMode, 0x51E560);
+    RH_ScopedInstall(CameraColDetAndReact, 0x520190);
     RH_ScopedInstall(CamControl, 0x527FA0, { .reversed = false });
     RH_ScopedInstall(Process, 0x52B730, { .reversed = false });
     RH_ScopedInstall(DeleteCutSceneCamDataMemory, 0x5B24A0);
@@ -2092,7 +2097,127 @@ void CCamera::CalculateDerivedValues(bool bForMirror, bool bOriented) {
 
 // 0x516B20
 void CCamera::ImproveNearClip(CVehicle* vehicle, CPed* ped, CVector* source, CVector* targPosn) {
-    return plugin::CallMethod<0x516B20, CCamera*, CVehicle*, CPed*, CVector*, CVector*>(this, vehicle, ped, source, targPosn);
+    const float dist = (*source - *targPosn).Magnitude(); // ((dx^2+dy^2)+dz^2) sqrt, same order as 0x516B45..0x516B59
+
+    if (dist > 10.0f /* 0x8CCD08 */) { // FCOMP [0x8CCD08]; TEST AH,0x41; JNZ -> skip
+        const float nearCam = 1.0f /* 0x8CCD04 */ * gCurDistForCam;
+        if (RwCameraGetNearClipPlane(Scene.m_pRwCamera) < nearCam) {
+            RwCameraSetNearClipPlane(Scene.m_pRwCamera, nearCam);
+        }
+    }
+
+    if (!vehicle) {
+        if (ped) {
+            if (!ped->bIsStanding) { // (!(ped->m_nPedFlags & 1)) @ [ped+0x46C]
+                const bool  bParachute = ped->GetIntelligence()->GetUsingParachute();        // 0x6011B0
+                auto* swimTask = ped->GetIntelligence()->GetTaskSwim();                      // 0x601070
+                if (swimTask) {
+                    // 0x516D..0x516D..: CWaterLevel::GetWaterLevel(source, waterZ, 0, nullptr)
+                    float waterZ = 0.0f;
+                    const bool bWaterFound = CWaterLevel::GetWaterLevel(source->x, source->y, source->z, waterZ, 0, nullptr); // 0x6EB690
+                    const bool bHighAboveWater = std::abs(waterZ - source->z) >= 0.3f; // 0x8CCCEC (FABS/FCOMP, strictly >=)
+                    if (bWaterFound && bHighAboveWater) {
+                        RwCameraSetNearClipPlane(Scene.m_pRwCamera, 0.1f /* 0x8CCCE8 */);
+                    } else if (swimTask->m_nSwimState == eSwimState::SWIM_UNDERWATER_SPRINTING // (uint16)(swimTask+0xA)==4
+                               && m_nPedZoom == 1 /* [TheCamera+0xC8] */) {
+                        RwCameraSetNearClipPlane(Scene.m_pRwCamera, 0.1f /* 0x8CCCE4 */);
+                    }
+                    // no near clip set otherwise
+                } else {
+                    const bool bJetPack = ped->GetIntelligence()->GetTaskJetPack(); // 0x601110
+                    if ((!bParachute && !bJetPack) /* JNZ -> normal path */ || GetRoughDistanceToGround() <= 10.0f /* 0x8CCCFC */) {
+                        // FCOMP [0x518B00 result] vs 0x8CCCFC; JNZ -> skip; bParachute||bJetPack gate
+                    } else {
+                        const CVector delta = *source - *targPosn; // 0x40FE60 (4th stack arg = 0x8CCCE0*gCurDistForCam IGNORED by callee)
+                        const float fNear = delta.Magnitude() * 0.3f; // 0x8CCCDC (MinF 0x404330: second operand unused at this site)
+                        if (RwCameraGetNearClipPlane(Scene.m_pRwCamera) < fNear) {
+                            RwCameraSetNearClipPlane(Scene.m_pRwCamera, fNear);
+                        }
+                    }
+                }
+            } else {
+                // ---- ped flagged standing (on a bike/boat) ----
+                // near clip = min clearance over the ped-frame corners, clamped and rounded.
+                auto& cam = GetActiveCam(); // m_aCams[m_nActiveCam]
+                float fMin = 1000000.0f;    // 0x497423F0
+
+                // Dead FPU in binary: fsin(DEG2RAD*(90.0f - cam.m_fPlayerVelocity*0.5f)) * [0xB6EC6C]
+                // is written to [ESP+0x28] and never read again (0x516E2D..0x516E43). Not reproduced.
+
+                auto* modelInfo = CModelInfo::GetModelInfo(ped->m_nModelIndex); // (0xA9B0C8)[idx]
+                modelInfo->AsPedModelInfoPtr()->AnimatePedColModelSkinnedWorld(ped->GetRpClump()); // 0x4C7170 (arg = [ped + 0x18])
+
+                // Raw frame-walk base (chain not symbolised yet, see body below). Reproduces the binary's
+                // indexed reads: frame = *(int*)(*(int*)(modelInfo+0x34) + 0x2C) + 8.
+                char* chain = *(char**)((char*)modelInfo + 0x34);
+                chain = *(char**)(chain + 0x2C);
+                const float* v = *(const float**)(chain + 8);
+                const char*  vtxBytes = reinterpret_cast<const char*>(v);
+
+                const float dotSaved =
+                    cam.m_vecFront.z * cam.m_vecSource.z
+                    + cam.m_vecFront.y * cam.m_vecSource.y
+                    + cam.m_vecSource.x * cam.m_vecFront.x; // 0x516E6B..0x516E9A
+
+                for (int32 fr = 0; fr < 2; ++fr) {
+                    const float* p = v + 1;   // binary ESI: vtx + 4 bytes
+                    const float* q = v + 6;   // binary EDX: vtx + 0x18
+                    // corner 1
+                    float fCorner = ((p[-1] * cam.m_vecFront.x + p[1] * cam.m_vecFront.z) + p[0] * cam.m_vecFront.y) - dotSaved - p[2];
+                    if (vtxBytes[0x11] == '\t') fCorner -= p[2]; // (char*)pfVar9 + 0xD
+                    if (fCorner < fMin) fMin = fCorner;
+                    // corner 2
+                    fCorner = ((q[1] * cam.m_vecFront.z + p[4] * cam.m_vecFront.x) + q[0] * cam.m_vecFront.y) - dotSaved - q[2];
+                    if (vtxBytes[0x25] == '\t') fCorner -= q[2]; // (char*)pfVar8 + 0xD
+                    if (fCorner < fMin) fMin = fCorner;
+                    // corner 3
+                    fCorner = ((q[5] * cam.m_vecFront.y + p[9] * cam.m_vecFront.x) + q[6] * cam.m_vecFront.z) - dotSaved - q[7];
+                    if (vtxBytes[0x39] == '\t') fCorner -= q[7]; // (char*)pfVar8 + 0x21
+                    if (fCorner < fMin) fMin = fCorner;
+                    // corner 4
+                    fCorner = ((q[10] * cam.m_vecFront.y + p[14] * cam.m_vecFront.x) + q[11] * cam.m_vecFront.z) - dotSaved - q[12];
+                    if (vtxBytes[0x4D] == '\t') fCorner -= q[12]; // (char*)pfVar8 + 0x35
+                    if (fCorner < fMin) fMin = fCorner;
+                    v += 0x1E;
+                    vtxBytes += 0x78;
+                }
+
+                if (fMin > 1000000.0f) fMin = 1000000.0f; // min() vs seeded bound (see asm FCOM [ESP+0x24])
+                if (fMin < 0.02f)      fMin = 0.02f;      // 0x8CCCD4
+                if (fMin > 0.3f)       fMin = 0.3f;       // 0x8CCCD0
+
+                // (float)(int)round(fMin*100.0f) * 0.01f -- 0x821B40 round-then-scale
+                fMin = static_cast<float>(static_cast<int32>(fMin * 100.0f)) * 0.01f; // 0x858628=100.0, 0x858C58=0.01
+                RwCameraSetNearClipPlane(Scene.m_pRwCamera, fMin);
+            }
+        }
+    } else {
+        const auto subtype = vehicle->m_nVehicleSubType; // +0x594
+        if (subtype == VEHICLE_TYPE_PLANE || subtype == VEHICLE_TYPE_HELI) {
+            if (gCurDistForCam <= 0.3f /* 0x8CCD00 */) {
+                if (subtype == VEHICLE_TYPE_HELI) {
+                    RwCameraSetNearClipPlane(Scene.m_pRwCamera, 0.1f /* 0x8CCCF0 */);
+                }
+            } else {
+                const float groundHeight = CalculateGroundHeight(eGroundHeightType::ENTITY_BB_BOTTOM); // 0x514B80(0)
+                if (10.0f /* 0x8CCCFC */ < m_aCams[m_nActiveCam].m_vecSource.z - groundHeight) {
+                    const float distFromCam = (*source - *targPosn).Magnitude(); // binary recomputes the SQRT here
+                    float fNear = 5.0f /* 0x8CCCF8 */ * gCurDistForCam;
+                    const float fNear2 = distFromCam * 0.1f /* 0x8CCCF4 */;
+                    if (fNear2 < fNear) {
+                        fNear = fNear2;
+                    }
+                    if (RwCameraGetNearClipPlane(Scene.m_pRwCamera) < fNear) {
+                        RwCameraSetNearClipPlane(Scene.m_pRwCamera, fNear);
+                    }
+                }
+            }
+        }
+    }
+
+    // tail (LAB_005170F5): always runs
+    float fClosestPed = 1000000.0f; // 0x497423F0
+    CCollision::CheckPeds(*source, m_aCams[m_nActiveCam].m_vecFront, fClosestPed); // 0x4154A0
 }
 
 static auto& preMirrorMat = StaticRef<CMatrix>(0xB6FE40);
@@ -2129,14 +2254,657 @@ bool CCamera::ConeCastCollisionResolve(const CVector& pos, const CVector& lookAt
 }
 
 // 0x51E560
+// Dispatch matches the jump table 0x520110 (case -> handler offsets read off the original binary).
 bool CCamera::TryToStartNewCamMode(int32 camSequence) {
-    return plugin::CallMethodAndReturn<bool, 0x51E560, CCamera*, int32>(this, camSequence);
+    // Shared epilogue LAB_0051ffad: TakeControl(FindPlayerEntity(-1), mode, JUMPCUT, 2)
+    // followed by the 0x50B830 helper; the tail returns !result (NEG AL / SBB AL,AL / INC AL).
+    const auto T0Tail = [this](eCamMode mode) {
+        TakeControl(FindPlayerEntity(-1), mode, eSwitchType::JUMPCUT, 2);
+        return !plugin::CallMethodAndReturn<bool, 0x50B830, CCamera*>(this);
+    };
+    // LAB_0051e8d6: SetCamPositionForFixedMode(camPos, camPos) + T0(MODE_FIXED). The binary
+    // passes the two arguments from the camPos-derived slots on the stack (0x51E8DF/0x51E8DA).
+    const auto FixedTail = [this](const CVector& camPos) {
+        this->SetCamPositionForFixedMode(camPos, camPos);
+        return T0Tail(MODE_FIXED);
+    };
+    // 0x56A490 with the fixed bool arguments pushed in the original (1, then six 0s).
+    const auto LOSFromPlayer = [](const CVector& point) {
+        return CWorld::GetIsLineOfSightClear(FindPlayerCoors(-1), point, true, false, false, false, false, false, false);
+    };
+    // Relies on the z term being multiplied by the float 0.0 (0x858B50) so it never contributes
+    // to the dot product; keep the dead operand to reproduce floating-point rounding order.
+    const auto AbortIfFarAndMovingAway = [](const CVector& delta, const CVector& speed, float far) {
+        if (delta.Magnitude() > far) {
+            if (delta.y * speed.y + speed.z * 0.0f + delta.x * speed.x > 0.0f)
+                return true;
+        }
+        return false;
+    };
+    // All of these branches normalise (coors.x, coors.y, 0.0f) (0x59C910) — the direction from
+    // the world origin (0,0,0) through the player's position, NOT the velocity vector.
+    const auto RadialDir = [](const CVector& coors) {
+        CVector dir{coors.x, coors.y, 0.0f};
+        dir.Normalise();
+        return dir;
+    };
+    // "Boat + target that is not a RHINO (0x1CC)": repeated everywhere before the LOS tests.
+    const auto BoatTargetNotRHINO = [this](CVehicle* vehicle) {
+        return vehicle && vehicle->m_nVehicleType == VEHICLE_TYPE_BOAT && m_pTargetEntity &&
+               m_pTargetEntity->m_nModelIndex != 0x1CC;
+    };
+
+    switch (camSequence) {
+    case 0:
+    {
+        // 0x51E587: MODE_WHEELCAM fired when a nearby obstacle is looked at.
+        auto* const vehicle = FindPlayerVehicle(-1, false); // 0x51E58B
+        if (!vehicle)
+            return false;
+        if (BoatTargetNotRHINO(vehicle))
+            return false; // 0x51E5A6
+        if (vehicle->m_nModelIndex == 0x1B0) // RHINO model never uses this mode
+            return false; // 0x51E5B8
+
+        const CVector offset{-1.4f, -2.3f, 0.3f}; // 0xBFB33333/0xC0133333/0x3E99999A
+        CVector source = vehicle->GetMatrix().TransformVector(offset); // 0x59C790
+        source += vehicle->GetPosition(); // 0x51E62F
+        if (!CWorld::GetIsLineOfSightClear(vehicle->GetPosition(), source, true, false, false, false, false, false, false))
+            return false;
+        TakeControl(vehicle, MODE_WHEELCAM, eSwitchType::JUMPCUT, 2); // 0x51E67C pushes 0x0E
+        return true;
+    }
+    case 1:
+    {
+        // 0x51E690: fixed mode, forward 20 / lateral 3, lift 1.5, gates far 40 + dot / near 4.5.
+        const CVector coors = FindPlayerCoors(-1);
+        const CVector dir = RadialDir(coors);
+        const float tx = coors.x + dir.x * 20.0f + dir.y * 3.0f;   // 0x858BA4/0x858B3C
+        const float ty = coors.y + dir.y * 20.0f + dir.x * -3.0f;  // 0x859024
+        const float tz = coors.z; // no vertical offset in case 1
+        if (BoatTargetNotRHINO(FindPlayerVehicle(-1, false)))
+            return false;
+
+        float camZ = tz;
+        {
+            bool bGround = false;
+            const float gz = CWorld::FindGroundZFor3DCoord({tx, ty, tz + 5.0f}, &bGround);
+            if (bGround)
+                camZ = gz + 1.5f; // 0x858CE8
+            else {
+                bool bRoof = false;
+                const float rz = CWorld::FindRoofZFor3DCoord(tx, ty, tz - 5.0f, &bRoof);
+                if (bRoof)
+                    camZ = rz + 1.5f;
+            }
+        }
+        const CVector camPos{tx, ty, camZ};
+        if (!LOSFromPlayer(camPos))
+            return false;
+
+        const CVector delta = camPos - coors; // 0x40FE60
+        if (AbortIfFarAndMovingAway(delta, FindPlayerSpeed(-1), 40.0f /* 0x858A10 */))
+            return false;
+        if (delta.Magnitude() < 4.5f /* 0x863214 */) // JNP 0x51F0EC
+            return false;
+        return FixedTail(camPos);
+    }
+    case 2:
+    {
+        // 0x51E90A: fixed mode, forward 16 / lateral 2.5, lift 0.5, gates far 29 + dot / near 2.
+        const CVector coors = FindPlayerCoors(-1);
+        const CVector dir = RadialDir(coors);
+        const float tx = coors.x + dir.x * 16.0f + dir.y * 2.5f;  // 0x8599D0/0x858FA0
+        const float ty = coors.y + dir.y * 16.0f + dir.x * -2.5f; // 0x8631B0
+        const float tz = coors.z;
+        if (BoatTargetNotRHINO(FindPlayerVehicle(-1, false)))
+            return false;
+
+        float camZ = tz;
+        {
+            bool bGround = false;
+            const float gz = CWorld::FindGroundZFor3DCoord({tx, ty, tz + 5.0f}, &bGround);
+            if (bGround)
+                camZ = gz + 0.5f; // 0x858B8C
+            else {
+                bool bRoof = false;
+                const float rz = CWorld::FindRoofZFor3DCoord(tx, ty, tz - 5.0f, &bRoof);
+                if (bRoof)
+                    camZ = rz + 0.5f;
+            }
+        }
+        const CVector camPos{tx, ty, camZ};
+        if (!LOSFromPlayer(camPos))
+            return false;
+
+        const CVector delta = camPos - coors;
+        if (AbortIfFarAndMovingAway(delta, FindPlayerSpeed(-1), 29.0f /* 0x863210 */))
+            return false;
+        if (delta.Magnitude() < 2.0f /* 0x858CA0 */)
+            return false;
+
+        this->SetCamPositionForFixedMode(camPos, camPos); // 0x50BEC0
+        TakeControl(FindPlayerEntity(-1), MODE_FIXED, eSwitchType::JUMPCUT, 2);
+        RwCameraSetNearClipPlane(Scene.m_pRwCamera, 0.15f); // 0x7EE1D0
+        return !plugin::CallMethodAndReturn<bool, 0x50B830, CCamera*>(this);
+    }
+    case 3:
+    {
+        // 0x51EBBC: fixed mode, forward 30 / lateral 8, camera 16 units UP (0x8599D0), no probe.
+        const CVector coors = FindPlayerCoors(-1);
+        const CVector dir = RadialDir(coors);
+        const float tx = coors.x + dir.x * 30.0f + dir.y * 8.0f;  // 0x858CA4/0x859000
+        const float ty = coors.y + dir.y * 30.0f + dir.x * -8.0f; // 0x85B320
+        const float tz = coors.z + 16.0f; // 0x8599D0
+        if (BoatTargetNotRHINO(FindPlayerVehicle(-1, false)))
+            return false;
+
+        const CVector camPos{tx, ty, tz};
+        if (!LOSFromPlayer(camPos))
+            return false;
+        this->SetCamPositionForFixedMode(camPos, camPos);
+        TakeControl(FindPlayerEntity(-1), MODE_FIXED, eSwitchType::JUMPCUT, 2);
+        if (plugin::CallMethodAndReturn<bool, 0x50B830, CCamera*>(this))
+            return false;
+        RwCameraSetNearClipPlane(Scene.m_pRwCamera, 0.15f);
+        return true;
+    }
+    case 5:
+    {
+        // 0x51ED1F: fixed mode, forward 30 / lateral 6, lift 3.5 (ground probe then roof probe).
+        const CVector coors = FindPlayerCoors(-1);
+        const CVector dir = RadialDir(coors);
+        const float tx = coors.x + dir.x * 30.0f + dir.y * -6.0f; // 0x858CA4/0x85A5C0
+        const float ty = coors.y + dir.y * 30.0f + dir.x * 6.0f;  // 0x858B44
+        const float tz = coors.z;
+
+        float camZ = tz;
+        {
+            bool bGround = false;
+            const float gz = CWorld::FindGroundZFor3DCoord({tx, ty, tz + 5.0f}, &bGround);
+            if (bGround)
+                camZ = gz + 3.5f; // 0x859028
+            else {
+                bool bRoof = false;
+                const float rz = CWorld::FindRoofZFor3DCoord(tx, ty, tz - 5.0f, &bRoof);
+                if (bRoof)
+                    camZ = rz + 3.5f;
+            }
+        }
+        const CVector camPos{tx, ty, camZ};
+        if (!LOSFromPlayer(camPos))
+            return false;
+        return FixedTail(camPos);
+    }
+    case 6:
+        TakeControl(FindPlayerEntity(-1), MODE_1STPERSON, eSwitchType::JUMPCUT, 2); // 0x51EEC8 pushes 0x10
+        return true;
+    case 7:
+    {
+        // 0x51EEDE: CAM_ON_A_STRING is started on a nearby "ignored" parked car (vehicle pool 0xB74494).
+        if (FindPlayerPed(-1)->GetWantedLevel() < 1) // 0x41BE60
+            return false;
+        if (!FindPlayerVehicle(-1, false))
+            return false;
+        if (BoatTargetNotRHINO(FindPlayerVehicle(-1, false)))
+            return false;
+
+        const auto& pool = *StaticRef<CVehiclePool*>(0xB74494); // ms_pVehiclePool
+        int32 idx = static_cast<int32>(pool.GetSize()) - 1;
+        while (idx >= 0) {
+            auto* const vehicle = pool.GetAt(idx--); // 0x41CC10
+            if (!vehicle || vehicle->m_nVehicleType != VEHICLE_TYPE_AUTOMOBILE)
+                continue;
+            if (vehicle == FindPlayerVehicle(-1, false))
+                continue;
+            if (!(vehicle->GetFlags() & 1)) // bIsStaticWaitingForCollision
+                continue;
+            if ((vehicle->m_nStatus & 0xF8) != 0x18)
+                continue;
+
+            const CVector vehiclePos = vehicle->m_matrix ? vehicle->m_matrix->GetPosition() : vehicle->GetPosition();
+            const CVector delta = vehiclePos - FindPlayerCoors(-1);
+            if (delta.Magnitude() >= 30.0f) // 0x858CA4, proceed only when strictly below
+                continue;
+            // Player forward dot gates (0x51F04B..0x51F0B2): the "ignored" car faces the player
+            // and the player is not yet heading straight at it.
+            const auto* const playerVeh = FindPlayerVehicle(-1, false);
+            const CVector playerFwd = playerVeh && playerVeh->m_matrix ? playerVeh->m_matrix->GetForward() : CVector{};
+            if (delta.x * playerFwd.y + delta.y * playerFwd.z >= 0.0f) // 0x51F064..0x51F076, FCOMP 0.0 (0x858B50)
+                continue;
+            const auto* const vehMat = vehicle->m_matrix;
+            const CVector vehFwd = vehMat ? vehMat->GetForward() : CVector{};
+            if (vehFwd.y * playerFwd.y + vehFwd.z * playerFwd.z <= 0.8f) // 0x51F0A1..0x51F0B2, FCOMP 0.8 (0x858C98)
+                continue;
+
+            TakeControl(vehicle, MODE_CAM_ON_A_STRING, eSwitchType::JUMPCUT, 2); // 0x51F0C9 pushes 0x12
+            if (!plugin::CallMethodAndReturn<bool, 0x50B830, CCamera*>(this))
+                return true;
+        }
+        return false;
+    }
+    case 8:
+    {
+        // 0x51F0FB: same "ignored parked car" search, but WHEELCAM with the per-car -1.4/-2.3/0.3 offset.
+        if (FindPlayerPed(-1)->GetWantedLevel() < 1)
+            return false;
+        if (!FindPlayerVehicle(-1, false))
+            return false;
+        if (BoatTargetNotRHINO(FindPlayerVehicle(-1, false)))
+            return false; // 0x51F13E..0x51F161
+
+        const auto& pool = *StaticRef<CVehiclePool*>(0xB74494);
+        int32 idx = static_cast<int32>(pool.GetSize()) - 1;
+        while (idx >= 0) {
+            auto* const vehicle = pool.GetAt(idx--);
+            if (!vehicle || vehicle->m_nVehicleType != VEHICLE_TYPE_AUTOMOBILE)
+                continue;
+            if (vehicle == FindPlayerVehicle(-1, false))
+                continue;
+            if (!(vehicle->GetFlags() & 1))
+                continue;
+
+            const CVector vehiclePos = vehicle->m_matrix ? vehicle->m_matrix->GetPosition() : vehicle->GetPosition();
+            const CVector delta = vehiclePos - FindPlayerCoors(-1);
+            if (delta.Magnitude() >= 30.0f)
+                continue;
+            const auto* const playerVeh = FindPlayerVehicle(-1, false);
+            const CVector playerFwd = playerVeh && playerVeh->m_matrix ? playerVeh->m_matrix->GetForward() : CVector{};
+            if (delta.x * playerFwd.y + delta.y * playerFwd.z >= 0.0f)
+                continue;
+            const auto* const vehMat = vehicle->m_matrix;
+            const CVector vehFwd = vehMat ? vehMat->GetForward() : CVector{};
+            if (vehFwd.y * playerFwd.y + vehFwd.z * playerFwd.z <= 0.8f)
+                continue;
+
+            const CVector offset{-1.4f, -2.3f, 0.3f};
+            const CVector sourcePos = vehicle->m_matrix ? vehicle->GetMatrix().TransformVector(offset) + vehiclePos
+                                                        : vehicle->GetPosition() + offset;
+            if (!CWorld::GetIsLineOfSightClear(vehicle->GetPosition(), sourcePos, true, false, false, false, false, false, false))
+                return false; // 0x51F340..0x51F34A
+            TakeControl(vehicle, MODE_WHEELCAM, eSwitchType::JUMPCUT, 2); // 0x51F358 pushes 0x0E
+            if (!plugin::CallMethodAndReturn<bool, 0x50B830, CCamera*>(this))
+                return true;
+        }
+        return false;
+    }
+    case 0x0E:
+    {
+        // 0x51F38C: radial cam, forward 34 (0x86322C), z = playerZ + 0.5 (+1.0 on a boat),
+        // gates far 44 + dot / near 3.
+        if (!FindPlayerVehicle(-1, false))
+            return false;
+        const CVector coors = FindPlayerCoors(-1);
+        const CVector dir = RadialDir(coors);
+        const float tx = coors.x + dir.x * 34.0f;
+        const float ty = coors.y + dir.y * 34.0f; // no lateral term in this mode
+        float tz = coors.z + 0.5f; // 0x858B8C
+        if (BoatTargetNotRHINO(FindPlayerVehicle(-1, false)))
+            tz += 1.0f; // 0x858624
+
+        const CVector camPos{tx, ty, tz};
+        if (!LOSFromPlayer(camPos))
+            return false;
+        const CVector delta = camPos - coors;
+        if (AbortIfFarAndMovingAway(delta, FindPlayerSpeed(-1), 44.0f /* 0x858FF8 */))
+            return false;
+        if (delta.Magnitude() < 3.0f /* 0x858B3C */)
+            return false;
+        return FixedTail(camPos);
+    }
+    case 0x0F:
+    {
+        // 0x51F56D: radial cam rotated by pi/3 (0x8630F8) added onto the unit direction,
+        // forward 30, roof/water clamp with probe z - 5.5, gates far 50 / near 3.
+        if (!FindPlayerVehicle(-1, false))
+            return false;
+        const CVector coors = FindPlayerCoors(-1);
+        CVector dir = RadialDir(coors);
+        const float angle = std::atan2(dir.y, dir.x) + 1.04719758f; // +0x8630F8 (pi/3)
+        dir.x += std::cos(angle); // 0xF5FF..0x51F60B
+        dir.y += std::sin(angle); // 0x51F60B..0x51F613
+        dir.Normalise();
+        const float tx = coors.x + dir.x * 30.0f; // 0x858CA4
+        const float ty = coors.y + dir.y * 30.0f;
+        const float probeZ = coors.z - 5.5f; // 0x859B4C
+
+        float camZ = coors.z;
+        {
+            bool bRoof = false;
+            const float rz = CWorld::FindRoofZFor3DCoord(tx, ty, probeZ, &bRoof);
+            if (bRoof)
+                camZ = rz + 0.5f; // 0x858B8C
+            else {
+                float waterZ = 0.0f;
+                if (CWaterLevel::GetWaterLevelNoWaves({tx, ty, camZ}, &waterZ, nullptr, nullptr)) {
+                    const float waterLevel = waterZ + (FindPlayerVehicle(-1, false) && FindPlayerVehicle(-1, false)->m_nVehicleType == VEHICLE_TYPE_BOAT ? -2.0f /* 0x8CC8C4 */ : 0.0f /* 0x858B50 */);
+                    if (camZ < waterLevel)
+                        camZ = waterLevel;
+                }
+            }
+        }
+        const CVector camPos{tx, ty, camZ};
+        if (!LOSFromPlayer(camPos))
+            return false;
+        const CVector delta = camPos - coors;
+        if (delta.Magnitude() > 50.0f /* 0x858B40 */) // JZ 0x51F0EC
+            return false;
+        if (delta.Magnitude() < 3.0f /* 0x858B3C */)
+            return false;
+        return FixedTail(camPos);
+    }
+    case 0x10:
+    {
+        // 0x51F7BC: radial cam rotated by 3.3161256 (0x863228), forward 25 (0x858FE8),
+        // roof/water clamp with probe z - 1.0, gates "within 50 and moving away" / near 2.
+        if (!FindPlayerVehicle(-1, false))
+            return false;
+        const CVector coors = FindPlayerCoors(-1);
+        CVector dir = RadialDir(coors);
+        const float angle = std::atan2(dir.y, dir.x) + 3.31612563f;
+        dir.x += std::cos(angle);
+        dir.y += std::sin(angle);
+        dir.Normalise();
+        const float tx = coors.x + dir.x * 25.0f;
+        const float ty = coors.y + dir.y * 25.0f;
+        const float probeZ = coors.z - 1.0f; // 0x858624
+
+        float camZ = coors.z;
+        {
+            bool bRoof = false;
+            const float rz = CWorld::FindRoofZFor3DCoord(tx, ty, probeZ, &bRoof);
+            if (bRoof)
+                camZ = rz + 0.5f;
+            else {
+                float waterZ = 0.0f;
+                if (CWaterLevel::GetWaterLevelNoWaves({tx, ty, camZ}, &waterZ, nullptr, nullptr)) {
+                    const float waterLevel = waterZ + (FindPlayerVehicle(-1, false) && FindPlayerVehicle(-1, false)->m_nVehicleType == VEHICLE_TYPE_BOAT ? -2.0f : 0.0f);
+                    if (camZ < waterLevel)
+                        camZ = waterLevel;
+                }
+            }
+        }
+        const CVector camPos{tx, ty, camZ};
+        if (!LOSFromPlayer(camPos))
+            return false;
+        const CVector delta = camPos - coors;
+        if (delta.Magnitude() <= 50.0f /* 0x858B40 */) {
+            if (delta.y * FindPlayerSpeed(-1).y + FindPlayerSpeed(-1).z * 0.0f + delta.x * FindPlayerSpeed(-1).x > 0.0f)
+                return false; // 0x51FA75
+        }
+        if (delta.Magnitude() < 2.0f /* 0x858CA0 */)
+            return false;
+        return FixedTail(camPos);
+    }
+    case 0x11:
+    {
+        // 0x51FA8F: radial cam, z raised 23 above water level on a boat (otherwise lowered 23),
+        // rotated by 2.5307274 (0x863224), forward 15 (0x858B48), gates far 57 / near 1.
+        const CVector coors = FindPlayerCoors(-1);
+        auto* const veh = FindPlayerVehicle(-1, false);
+        const bool bBoat = veh && veh->m_nVehicleType == VEHICLE_TYPE_BOAT;
+        CVector dir = RadialDir(coors);
+        const float angle = std::atan2(dir.y, dir.x) + 2.53072739f;
+        dir.x += std::cos(angle);
+        dir.y += std::sin(angle);
+        dir.Normalise();
+        const float tx = coors.x + dir.x * 15.0f;
+        const float ty = coors.y + dir.y * 15.0f;
+        const float probeZ = coors.z + (bBoat ? 23.0f : -23.0f); // 0x858F84
+
+        float camZ = coors.z;
+        {
+            bool bRoof = false;
+            const float rz = CWorld::FindRoofZFor3DCoord(tx, ty, probeZ, &bRoof);
+            if (bRoof)
+                camZ = rz + 0.5f;
+            else {
+                float waterZ = 0.0f;
+                if (CWaterLevel::GetWaterLevelNoWaves({tx, ty, camZ}, &waterZ, nullptr, nullptr)) {
+                    const float waterLevel = waterZ + (bBoat ? -2.0f : 0.0f);
+                    if (camZ < waterLevel)
+                        camZ = waterLevel;
+                }
+            }
+        }
+        const CVector camPos{tx, ty, camZ};
+        if (!LOSFromPlayer(camPos))
+            return false;
+        const CVector delta = camPos - coors;
+        if (delta.Magnitude() > 57.0f /* 0x863208 */)
+            return false;
+        if (delta.Magnitude() < 1.0f /* 0x858624 */)
+            return false;
+        return FixedTail(camPos);
+    }
+    case 0x12:
+    {
+        // 0x51FD0A: radial cam, z raised 4 / lowered 1 on a boat, rotated by 0.48869219 (0x863220),
+        // forward 12.5 (0x86321C), gates far 36 / near 2.
+        const CVector coors = FindPlayerCoors(-1);
+        auto* const veh = FindPlayerVehicle(-1, false);
+        const bool bBoat = veh && veh->m_nVehicleType == VEHICLE_TYPE_BOAT;
+        CVector dir = RadialDir(coors);
+        const float angle = std::atan2(dir.y, dir.x) + 0.48869219f;
+        dir.x += std::cos(angle);
+        dir.y += std::sin(angle);
+        dir.Normalise();
+        const float tx = coors.x + dir.x * 12.5f;
+        const float ty = coors.y + dir.y * 12.5f;
+        const float probeZ = coors.z + (bBoat ? 4.0f /* 0x858B90 */ : -1.0f /* 0x858624 */);
+
+        float camZ = coors.z;
+        {
+            bool bRoof = false;
+            const float rz = CWorld::FindRoofZFor3DCoord(tx, ty, probeZ, &bRoof);
+            if (bRoof)
+                camZ = rz + 0.5f;
+            else {
+                float waterZ = 0.0f;
+                if (CWaterLevel::GetWaterLevelNoWaves({tx, ty, camZ}, &waterZ, nullptr, nullptr)) {
+                    const float waterLevel = waterZ + (bBoat ? -2.0f : 0.0f);
+                    if (camZ < waterLevel)
+                        camZ = waterLevel;
+                }
+            }
+        }
+        const CVector camPos{tx, ty, camZ};
+        if (!LOSFromPlayer(camPos))
+            return false;
+        const CVector delta = camPos - coors;
+        if (delta.Magnitude() > 36.0f /* 0x863204 */)
+            return false;
+        if (delta.Magnitude() < 2.0f /* 0x858CA0 */)
+            return false;
+        return FixedTail(camPos);
+    }
+    case 0x13:
+        if (!GetActiveCam().Process_DW_HeliChaseCam(true)) // mode 0x38
+            return false;
+        return T0Tail(MODE_DW_HELI_CHASE);
+    case 0x14:
+        if (!GetActiveCam().Process_DW_CamManCam(true)) // mode 0x39
+            return false;
+        return T0Tail(MODE_DW_CAM_MAN);
+    case 0x15:
+        if (!GetActiveCam().Process_DW_BirdyCam(true)) // mode 0x3A
+            return false;
+        return T0Tail(MODE_DW_BIRDY);
+    case 0x16:
+        if (!GetActiveCam().Process_DW_PlaneSpotterCam(true)) // mode 0x3B
+            return false;
+        return T0Tail(MODE_DW_PLANE_SPOTTER);
+    case 0x17:
+    case 0x18:
+        StaticRef<uint8>(0xB6F059).get() = 0;
+        return false;
+    case 0x19:
+        if (!GetActiveCam().Process_DW_PlaneCam1(true)) // mode 0x3E
+            return false;
+        return T0Tail(MODE_DW_PLANECAM1);
+    case 0x1A:
+        if (!GetActiveCam().Process_DW_PlaneCam2(true)) // mode 0x3F
+            return false;
+        return T0Tail(MODE_DW_PLANECAM2);
+    case 0x1B:
+        if (!GetActiveCam().Process_DW_PlaneCam3(true)) // mode 0x40
+            return false;
+        return T0Tail(MODE_DW_PLANECAM3);
+    case 0x1C:
+        TakeControl(FindPlayerEntity(-1), MODE_CAM_ON_A_STRING, eSwitchType::JUMPCUT, 2); // 0x5200ED pushes 0x12
+        return true;
+    default:
+        // Jump table 0x520110: entries 4 and 9..0x0D all point at the "return 0" epilogue 0x51F0EC.
+        return false;
+    }
 }
+
+// Dead-cache globals used by the first half of CameraColDetAndReact (0x520190).
+static auto& fColThreshCache = StaticRef<float>(0xB700EC);    // seeds 100.0; cached min(CColSphere low point z)
+static auto& nColThreshModel  = StaticRef<int32>(0xB700F0);   // last m_nModelIndex the sphere cache was computed for
+static auto& bColTrackInit    = StaticRef<uint32>(0xB700E8);  // bit0: camera-collision movement tracking initialised
+static auto& vecColTrackLast  = StaticRef<CVector>(0xB700DC); // last camera source in the movement-tracking code
+static auto& s_fLastRadiusUsedInCollisionPreventionOfCamera = StaticRef<float>(0xB6EC6C);
 
 // 0x520190
 void CCamera::CameraColDetAndReact(CVector* source, CVector* target) {
-    plugin::CallMethod<0x520190, CCamera*, CVector*, CVector*>(this, source, target);
+    const float deltaX = source->x - target->x; // [ESP+0x18]
+    const float deltaY = source->y - target->y; // [ESP+0x1C]
+    const float deltaZ = source->z - target->z; // [ESP+0x20]
+
+    // 0x5201C5..0x5201EB: accumulated in z,y,x order, then scaled by cam vars.
+    // Reused below as the cone-cast radius / minDist (fVar6 in the binary, [ESP+0x38]).
+    float dist = std::sqrt(deltaZ * deltaZ + deltaY * deltaY + deltaX * deltaX) * gpCamColVars[0] * 0.2939f /* 0x8CCB90 */;
+
+    if (gCurCamColVars > 9u && CWorld::pIgnoreEntity) {
+        auto* const entity = CWorld::pIgnoreEntity;
+
+        if (entity->GetType() == ENTITY_TYPE_VEHICLE && entity->AsVehicle()->m_nVehicleSubType == VEHICLE_TYPE_AUTOMOBILE) {
+            // Rebuild the sphere low-point cache only when the model changed (0x520229 CMP/JZ).
+            if (entity->m_nModelIndex != nColThreshModel) {
+                auto* const colModel = entity->GetColModel();           // 0x535300
+                auto* const colData  = colModel->m_pColData;            // +0x2C
+                fColThreshCache = 100.0f;
+                if (colData && colData->m_nNumSpheres > 0) {            // 0x520249: first short of the col data
+                    const auto* sph = colData->m_pSpheres;              // +0x8
+                    for (int32 count = colData->m_nNumSpheres; count > 0; --count, sph++) {
+                        const float low = sph->m_vecCenter.z - sph->m_fRadius; // pfVar9[-1] - pfVar9[0]
+                        if (low < fColThreshCache) {
+                            fColThreshCache = low;
+                        }
+                    }
+                }
+                nColThreshModel = entity->m_nModelIndex;
+            }
+
+            if (!entity->m_matrix) {
+                entity->AllocateMatrix();
+                entity->m_placement.UpdateMatrix(entity->m_matrix);
+            }
+
+            // Look-ahead distance of target along the vehicle's forward ('at') axis,
+            // minus the cached sphere low point. In the binary (0x520333..0x5203EA) this
+            // value is only ever written to an unused stack temporary that is never read
+            // again; both exits fall through to the shared tail, so it has no effect.
+            const auto* const mat = entity->m_matrix;
+            float fVar2 = (target->z - mat->GetPosition().z) * mat->GetUp().z
+                        + (target->y - mat->GetPosition().y) * mat->GetUp().y
+                        + (target->x - mat->GetPosition().x) * mat->GetUp().x; // 0x5202CB..0x5202EA
+            fVar2 -= fColThreshCache;
+            if (fVar2 < 0.2f /* 0x858CC4 */) {
+                fVar2 = 0.2f;
+            }
+            (void)fVar2;
+        } else {
+            // Decorative-branch (0x52034B..0x5203EA): in the binary the selected value only
+            // feeds the same unused stack temporary as above -- no reads, no side effects.
+            auto* const colModel = CModelInfo::GetModelInfo(entity->m_nModelIndex)->GetColModel(); // (0xA9B0C8)[idx] + 0x14
+            const auto& bb = colModel->m_boundBox;                   // min@0, max@0xC
+            const float halfX = (bb.m_vecMax.x - bb.m_vecMin.x) * 0.5f; // (pfVar9[3] - pfVar9[0]) * 0.5  / 0x858B8C
+            const float halfY = (bb.m_vecMax.y - bb.m_vecMin.y) * 0.5f; // (pfVar9[4] - pfVar9[1]) * 0.5
+            const float halfZ = (bb.m_vecMax.z - bb.m_vecMin.z) * 0.5f; // (pfVar9[5] - pfVar9[2]) * 0.5
+            float fVar2 = halfZ;
+            if (halfX < halfY) {                    // 0x520392 FCOMP
+                if (halfY >= halfZ) {               // 0x5203B2 FCOMP
+                    fVar2 = halfY;
+                }
+            } else {
+                if (halfX >= halfZ) {               // 0x52039D FCOMP
+                    fVar2 = halfX;
+                }
+            }
+            (void)fVar2;
+        }
+    }
+
+    // ---- tail (0x5203EF onwards) ----
+    // fVar6 is the "dist" above; clamp it to [.., gpCamColVars[1]] and then to <= 0.65.
+    if (gpCamColVars[1] < dist) {
+        dist /* becomes the cone-cast radius */ = gpCamColVars[1];
+    }
+    if (dist > 0.65f /* 0x8CCE18 */) {
+        dist = 0.65f;
+    }
+
+    // Cone radius (local_1c): per-cam-mode, otherwise a fraction of the source-target distance.
+    float fRadius = gpCamColVars[2];
+    if (gCurCamColVars <= 9u) { // 0x520428 JA BL,0x9
+        fRadius = gCurCamColVars > 3u ? 0.3f /* 0x8CCE14 */ : 0.18f /* 0x8CCE10 */;
+        fRadius /= std::sqrt(deltaZ * deltaZ + deltaY * deltaY + deltaX * deltaX); // 0x52043D..0x520466 (FDIVR)
+    }
+
+    bool bMotorcycle = false;
+    if (gCurCamColVars > 9u && CWorld::pIgnoreEntity) { // 0x52046E...0x52049F
+        auto* const ignore = CWorld::pIgnoreEntity;
+        if (ignore->GetType() == ENTITY_TYPE_VEHICLE && ignore->AsVehicle()->m_nVehicleType == VEHICLE_TYPE_BIKE) {
+            bMotorcycle = true;
+            fRadius = 0.05f /* 0x8CCE0C */;
+        }
+    }
+
+    s_fLastRadiusUsedInCollisionPreventionOfCamera = dist; // 0x5204B8: MOV [0xB6EC6C],ECX
+    CVector outDest{};
+    float   outDist = 0.0f;
+    const bool bHit = ConeCastCollisionResolve(*source, *target, outDest, /* radius= */ dist, /* minDist= */ fRadius, outDist); // 0x51A5D0
+
+    if (bHit && outDist > gpCamColVars[3]) { // 0x5204D7: near-clip on even parity only (outDist > gp[3])
+        RwCameraSetNearClipPlane(Scene.m_pRwCamera, gpCamColVars[4]);
+    }
+
+    if (outDist < gCurDistForCam) { // 0x520500 FCOMP; JP 0x52051C
+        if ((bColTrackInit & 1) == 0) {
+            bColTrackInit |= 1;
+            vecColTrackLast = CVector{ 0.0f, 0.0f, 0.0f };
+        }
+        const CVector delta = *source - vecColTrackLast;                    // 0x52054A..0x52056F
+        const float sqmag   = (delta.z * delta.z + delta.y * delta.y) + delta.x * delta.x;
+        if (sqmag <= 0.01f * 0.01f /* FCOMPP 0x8CCE08, update on even parity */) { // 0x520575..0x52058E
+            const float step = (outDist - gCurDistForCam) * (CTimer::ms_fTimeStep * gpCamColVars[5]); // 0x520595..0x5205A8
+            gCurDistForCam += step > 0.05f /* 0x8CCE04 */ ? 0.05f : step; // clamp to <=0.05
+        }
+        vecColTrackLast = *source;
+    } else {
+        gCurDistForCam = outDist;
+    }
+
+    if (gCurDistForCam > 1.0f /* 0x858624 */) { // 0x5205E6
+        gCurDistForCam = 1.0f;
+    }
+
+    // Move `source` towards `target` by gCurDistForCam (0x520603..0x52063F).
+    const float x = deltaX * gCurDistForCam + target->x;
+    const float y = deltaY * gCurDistForCam + target->y;
+    const float z = deltaZ * gCurDistForCam + target->z;
+    source->x = x;
+    source->y = y;
+    source->z = z;
+
+    if (bMotorcycle && gCurDistForCam >= 0.5f /* 0x8CCE00 */) { // 0x520649..0x52067C
+        RwCameraSetNearClipPlane(Scene.m_pRwCamera, 0.05f /* 0x8CCDFC */);
+    }
 }
+
+
 
 // 0x527FA0
 void CCamera::CamControl() {
