@@ -69,13 +69,18 @@ LONG WINAPI WindowsExceptionHandler(PEXCEPTION_POINTERS pExceptionInfo) {
     }
     s_HasHandled = true;
 
+    // TEMP: raw-file mirror of the crash dump (console+spdlog may be lost on exit)
+    CreateDirectoryA("C:\\Users\\ilyan\\GTA San Andreas\\logs", nullptr);
+    FILE* s_crashFile = fopen("C:\\Users\\ilyan\\GTA San Andreas\\logs\\log.log", "a");
+    #define CRASHLOG(...) do { printf(__VA_ARGS__); printf("\n"); if (s_crashFile) fprintf(s_crashFile, __VA_ARGS__); if (s_crashFile) fputc('\n', s_crashFile); } while (0)
+
     spdlog::apply_all([](auto&& logger) {
         logger->dump_backtrace();
     });
     
     const auto Section = [](const char* name) {
         SPDLOG_INFO("*********{}**********", name);
-        printf("*********%s**********\n", name);
+        CRASHLOG("*********%s**********", name);
     };
 
     Section("UNHANDLED EXCEPTION");
@@ -83,9 +88,9 @@ LONG WINAPI WindowsExceptionHandler(PEXCEPTION_POINTERS pExceptionInfo) {
     SPDLOG_INFO("Exception Code: {:#010x}", pExceptionInfo->ExceptionRecord->ExceptionCode);
     SPDLOG_INFO("Exception Flags: {:#010x}", pExceptionInfo->ExceptionRecord->ExceptionFlags);
     SPDLOG_INFO("Exception Address: {:#010x}", (uintptr_t)pExceptionInfo->ExceptionRecord->ExceptionAddress);
-    printf("Exception Code: 0x%08x\n", (uint32_t)pExceptionInfo->ExceptionRecord->ExceptionCode);
-    printf("Exception Flags: 0x%08x\n", (uint32_t)pExceptionInfo->ExceptionRecord->ExceptionFlags);
-    printf("Exception Address: 0x%08x\n", (uint32_t)(uintptr_t)pExceptionInfo->ExceptionRecord->ExceptionAddress);
+    CRASHLOG("Exception Code: 0x%08x", (uint32_t)pExceptionInfo->ExceptionRecord->ExceptionCode);
+    CRASHLOG("Exception Flags: 0x%08x", (uint32_t)pExceptionInfo->ExceptionRecord->ExceptionFlags);
+    CRASHLOG("Exception Address: 0x%08x", (uint32_t)(uintptr_t)pExceptionInfo->ExceptionRecord->ExceptionAddress);
 
     // Dump exception parameters
     Section("PARAMETERS");
@@ -102,7 +107,7 @@ LONG WINAPI WindowsExceptionHandler(PEXCEPTION_POINTERS pExceptionInfo) {
     {
         const auto DumpRegister = [](auto name, auto value) {
             SPDLOG_INFO("\t{}: {:#010x}", name, value);
-            printf("\t%s: 0x%08x\n", name, (uint32_t)(uintptr_t)value);
+            CRASHLOG("\t%s: 0x%08x", name, (uint32_t)(uintptr_t)value);
         };
         DumpRegister("EAX", context.Eax);
         DumpRegister("EBX", context.Ebx);
@@ -186,7 +191,7 @@ LONG WINAPI WindowsExceptionHandler(PEXCEPTION_POINTERS pExceptionInfo) {
                 hasSym ? sym->Name : "<unknown>",
                 hasLineInfo ? lineInfo.LineNumber : 0
             );
-            printf("\t0x%08x: %s!%s:%lu\n",
+            CRASHLOG("\t0x%08x: %s!%s:%lu",
                 (uint32_t)pcOffset,
                 hasModuleInfo ? moduleInfo.ModuleName : "<unknown>",
                 hasSym ? sym->Name : "<unknown>",
@@ -202,6 +207,12 @@ LONG WINAPI WindowsExceptionHandler(PEXCEPTION_POINTERS pExceptionInfo) {
     spdlog::apply_all([](auto&& logger) {
         logger->flush();
     });
+
+    if (s_crashFile) {
+        fflush(s_crashFile);
+        fclose(s_crashFile);
+    }
+    #undef CRASHLOG
 
     return EXCEPTION_EXECUTE_HANDLER;
 }
