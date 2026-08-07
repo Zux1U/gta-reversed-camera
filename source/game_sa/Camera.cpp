@@ -2274,8 +2274,8 @@ bool CCamera::TryToStartNewCamMode(int32 camSequence) {
     };
     // Relies on the z term being multiplied by the float 0.0 (0x858B50) so it never contributes
     // to the dot product; keep the dead operand to reproduce floating-point rounding order.
-    const auto AbortIfFarAndMovingAway = [](const CVector& delta, const CVector& speed, float far) {
-        if (delta.Magnitude() > far) {
+    const auto AbortIfFarAndMovingAway = [](const CVector& delta, const CVector& speed, float fDist) {
+        if (delta.Magnitude() > fDist) {
             if (delta.y * speed.y + speed.z * 0.0f + delta.x * speed.x > 0.0f)
                 return true;
         }
