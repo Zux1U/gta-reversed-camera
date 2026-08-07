@@ -541,15 +541,25 @@ void InjectHooksMain() {
     **/
 
     #ifndef NOTSA_STANDALONE
-        HookInstall(0x53E230, &Render2dStuff);   // [ImGui] This one shouldn't be reversible, it contains imgui debug menu logic, and makes game unplayable without
-        HookInstall(0x541DD0, CPad::UpdatePads); // [ImGui] Changes logic of the function and shouldn't be toggled on/off
-        HookInstall(0x459F70, CVehicleRecording::Render); // [ImGui] Debug stuff rendering
+        #ifndef GTASA_CAMERA_ONLY
+            HookInstall(0x53E230, &Render2dStuff);   // [ImGui] This one shouldn't be reversible, it contains imgui debug menu logic, and makes game unplayable without
+            HookInstall(0x541DD0, CPad::UpdatePads); // [ImGui] Changes logic of the function and shouldn't be toggled on/off
+            HookInstall(0x459F70, CVehicleRecording::Render); // [ImGui] Debug stuff rendering
 
-        #ifdef NOTSA_WINDOWED_MODE
-            notsa::InjectWindowedModeHooks();
+            #ifdef NOTSA_WINDOWED_MODE
+                notsa::InjectWindowedModeHooks();
+            #endif
         #endif
     #endif
 
+#ifdef GTASA_CAMERA_ONLY
+    // Camera-only build: hook only the CCamera subsystem. The App/Win32/WinPs/Rs/VideoMode,
+    // SDL3 and ImGui-driven hooks (Render2dStuff/CPad::UpdatePads/CVehicleRecording::Render/
+    // WindowedMode) are deliberately NOT installed - this module must not depend on any
+    // --unhook-except filtering to strip them, they crash before the camera even starts.
+    CCamera::InjectHooks();
+    return;
+#else
     CDoor::InjectHooks();
     CControllerConfigManager::InjectHooks();
     CFormation::InjectHooks();
@@ -1462,6 +1472,7 @@ void InjectHooksMain() {
 #if _DEBUG
     CCurves::TestCurves();
 #endif
+#endif // !GTASA_CAMERA_ONLY
 }
 
 void InjectHooksMain(HMODULE hThisDLL) {

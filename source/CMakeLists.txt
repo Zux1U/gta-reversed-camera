@@ -5,6 +5,7 @@ option(${RE_PROJECT}_WITH_OPENAL "Use OpenAL" OFF)
 option(${RE_PROJECT}_WITH_SDL3 "Use SDL3" OFF)
 option(${RE_PROJECT}_STANDALONE "Build standalone executable" OFF)
 option(${RE_PROJECT}_DUMP_HOOKS_ONLY "Dump hooks only" OFF)
+option(${RE_PROJECT}_CAMERA_ONLY "Camera-only plugin: installs only CCamera::InjectHooks, no App/Win32/WinPs/Rs/VideoMode/SDL3/ImGui hooks" OFF)
 
 if (${RE_PROJECT}_WITH_SDL3)
     add_compile_definitions(NOTSA_USE_SDL3)
@@ -17,6 +18,9 @@ if (${RE_PROJECT}_DUMP_HOOKS_ONLY)
         message(FATAL_ERROR "${RE_PROJECT}_DUMP_HOOKS_ONLY requires ${RE_PROJECT}_STANDALONE=ON")
     endif()
     add_compile_definitions(NOTSA_DUMP_HOOKS_ONLY)
+endif()
+if (${RE_PROJECT}_CAMERA_ONLY)
+    add_compile_definitions(GTASA_CAMERA_ONLY)
 endif()
 
 #--------------------------------------------------------------------
@@ -87,6 +91,13 @@ set_target_properties(${RE_PROJECT_LIB_NAME}
     RUNTIME_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/bin/${CMAKE_BUILD_TYPE}/"
     COMPILE_WARNING_AS_ERROR ON
 )
+if (${RE_PROJECT}_CAMERA_ONLY)
+    set_target_properties(${RE_PROJECT_LIB_NAME}
+        PROPERTIES
+        OUTPUT_NAME "camera_reversed"
+        PDB_NAME "camera_reversed"
+    )
+endif()
 target_link_options(${RE_PROJECT_LIB_NAME} PRIVATE "/SUBSYSTEM:WINDOWS")
 
 #--------------------------------------------------------------------
