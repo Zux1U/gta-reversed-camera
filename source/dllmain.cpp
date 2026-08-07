@@ -10,6 +10,8 @@
 
 void InjectHooksMain(HMODULE hThisDLL);
 
+LONG WINAPI WindowsExceptionHandler(PEXCEPTION_POINTERS pExceptionInfo);
+
 static constexpr auto DEFAULT_INI_FILENAME = "gta-reversed.ini";
 
 #include "extensions/Configs/FastLoader.hpp"
@@ -69,6 +71,15 @@ static void ApplyCommandLineHookSettings() {
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
     switch (ul_reason_for_call) {
     case DLL_PROCESS_ATTACH: {
+        // TEMP: install crash handler unconditionally (Logging singleton may never run in camera-only)
+        AddVectoredExceptionHandler(1, WindowsExceptionHandler);
+        // TEMP: probe that the plugin got loaded at all
+        CreateDirectoryA("C:\\Users\\ilyan\\GTA San Andreas\\logs", nullptr);
+        if (FILE* f = fopen("C:\\Users\\ilyan\\GTA San Andreas\\logs\\plugin_loaded.txt", "w")) {
+            fprintf(f, "plugin loaded, pid=0x%x\n", (uint32_t)GetCurrentProcessId());
+            fclose(f);
+        }
+
         // Fail if RenderWare has already been started
         if (*(RwCamera**)0xC1703C) {
             MessageBox(NULL, "gta_reversed failed to load (RenderWare has already been started)", "Error", MB_ICONERROR | MB_OK);
